@@ -10,15 +10,48 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # 1. 파이썬으로 데이터 변환 (앱에는 파이썬 안 들어감! 데이터만 뽑아냄)
+    # 1. 파이썬 설정
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # 2. 성경 데이터 변환 (베트남어, 스페인어 포함 풀버전)
     - name: Convert LFA to JSON
       run: |
+        mkdir -p assets
         cat <<EOF > convert.py
         import os, zipfile, json, re
         
-        # 포함할 파일 목록
+        # [수정] 빠진 언어 없이 꽉 채운 리스트
         TARGETS = [
-            ("korhrv.lfa", "개역한글"), ("kornkrv.lfa", "개역개정"), ("engNIV.lfa", "영어 NIV")
+            ("korhrv.lfa", "개역한글 (기본)"),
+            ("kornkrv.lfa", "개역개정"),
+            ("korklb.lfa", "현대인의 성경"),
+            ("koreasy.lfa", "쉬운성경"),
+            ("korHKJV.lfa", "킹제임스 흠정역"),
+            ("korcath.lfa", "가톨릭 성경"),
+            ("kordob.lfa", "우리말 성경"),
+            ("kornrsv.lfa", "새번역"),
+            ("korktv.lfa", "바른성경"),
+            ("korNKCB.lfa", "공동번역 개정판"),
+            ("kornkcb.lfa", "공동번역 개정판"),
+            ("kchhrv.lfa", "국한문 개역한글"),
+            ("kchnkrv.lfa", "국한문 개역개정"),
+            ("kchktv.lfa", "국한문 바른성경"),
+            ("engNIV.lfa", "영어 NIV"),
+            ("ENGKJV.lfa", "영어 KJV"),
+            ("engNASB.lfa", "영어 NASB"),
+            ("engnlt.lfa", "영어 NLT"),
+            ("chnncv.lfa", "중국어 (NCV)"),
+            ("chnncvtr.lfa", "중국어 (번체)"),
+            ("chnunisimpnospace.lfa", "중국어 (간체)"),
+            ("jpnjct.lfa", "일본어 (JCT)"),
+            ("jpnnew.lfa", "일본어 (신역)"),
+            ("vietnamese.lfa", "베트남어"),
+            ("spnrei.lfa", "스페인어"),
+            ("gerlut.lfa", "독일어"),
+            ("latvul.lfa", "라틴어")
         ]
         
         BOOK_NAMES = {
@@ -43,7 +76,9 @@ jobs:
 
         for fname, dname in TARGETS:
             path = os.path.join(base_path, fname)
-            if not os.path.exists(path): continue
+            if not os.path.exists(path):
+                print(f"Skipping {fname} (Not found)")
+                continue
             
             data["bibles"][dname] = {}
             try:
@@ -56,7 +91,6 @@ jobs:
                             with zf.open(n) as f:
                                 txt = f.read().decode('cp949', errors='ignore')
                                 lines = [l.strip() for l in txt.splitlines() if l.strip() and not l.startswith("[source")]
-                                
                                 if bk not in data["bibles"][dname]: data["bibles"][dname][bk] = {}
                                 data["bibles"][dname][bk][ch] = lines
             except Exception as e: print(e)
@@ -65,22 +99,28 @@ jobs:
             json.dump(data, f, ensure_ascii=False)
         EOF
         
-        # 변환 실행
         python convert.py
-        ls -lh assets/bible.json
 
-    # 2. 플러터 설정
+    # 3. Java 설정
+    - uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    # 4. Flutter 설정
     - uses: subosito/flutter-action@v2
       with:
         flutter-version: '3.19.0'
         channel: 'stable'
 
-    # 3. 진짜 네이티브 앱 빌드 (파이썬 없음!)
-    - name: Build APK
+    # 5. 앱 생성 및 빌드
+    - name: Create and Build
       run: |
+        flutter create . --org com.bible.father --project-name father_bible --platforms android
         flutter pub get
         flutter build apk --release
 
+    # 6. 결과물 업로드
     - uses: actions/upload-artifact@v4
       with:
         name: father-bible-native

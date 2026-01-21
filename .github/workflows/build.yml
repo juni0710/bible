@@ -1,42 +1,87 @@
-name: Build Android APK
+name: Build Native Flutter APK
 
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-    - name: Setup Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
+    # 1. 파이썬으로 데이터 변환 (앱에는 파이썬 안 들어감! 데이터만 뽑아냄)
+    - name: Convert LFA to JSON
+      run: |
+        cat <<EOF > convert.py
+        import os, zipfile, json, re
+        
+        # 포함할 파일 목록
+        TARGETS = [
+            ("korhrv.lfa", "개역한글"), ("kornkrv.lfa", "개역개정"), ("engNIV.lfa", "영어 NIV")
+        ]
+        
+        BOOK_NAMES = {
+            1: "창세기", 2: "출애굽기", 3: "레위기", 4: "민수기", 5: "신명기",
+            6: "여호수아", 7: "사사기", 8: "룻기", 9: "사무엘상", 10: "사무엘하",
+            11: "열왕기상", 12: "열왕기하", 13: "역대상", 14: "역대하", 15: "에스라",
+            16: "느헤미야", 17: "에스더", 18: "욥기", 19: "시편", 20: "잠언",
+            21: "전도서", 22: "아가", 23: "이사야", 24: "예레미야", 25: "예레미야애가",
+            26: "에스겔", 27: "다니엘", 28: "호세아", 29: "요엘", 30: "아모스",
+            31: "오바댜", 32: "요나", 33: "미가", 34: "나훔", 35: "하박국",
+            36: "스바냐", 37: "학개", 38: "스가랴", 39: "말라기", 40: "마태복음",
+            41: "마가복음", 42: "누가복음", 43: "요한복음", 44: "사도행전", 45: "로마서",
+            46: "고린도전서", 47: "고린도후서", 48: "갈라디아서", 49: "에베소서", 50: "빌립보서",
+            51: "골로새서", 52: "데살로니가전서", 53: "데살로니가후서", 54: "디모데전서", 55: "디모데후서",
+            56: "디도서", 57: "빌레몬서", 58: "히브리서", 59: "야고보서", 60: "베드로전서",
+            61: "베드로후서", 62: "요한일서", 63: "요한이서", 64: "요한삼서", 65: "유다서",
+            66: "요한계시록"
+        }
 
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
+        data = {"bibles": {}, "book_names": {str(k):v for k,v in BOOK_NAMES.items()}}
+        base_path = "assets/bibles"
+
+        for fname, dname in TARGETS:
+            path = os.path.join(base_path, fname)
+            if not os.path.exists(path): continue
+            
+            data["bibles"][dname] = {}
+            try:
+                with zipfile.ZipFile(path, 'r') as zf:
+                    pat = re.compile(r'.*?(\d{2})_(\d+)\.[lL][fF][bB]$')
+                    for n in zf.namelist():
+                        m = pat.match(n)
+                        if m:
+                            bk, ch = str(int(m.group(1))), str(int(m.group(2)))
+                            with zf.open(n) as f:
+                                txt = f.read().decode('cp949', errors='ignore')
+                                lines = [l.strip() for l in txt.splitlines() if l.strip() and not l.startswith("[source")]
+                                
+                                if bk not in data["bibles"][dname]: data["bibles"][dname][bk] = {}
+                                data["bibles"][dname][bk][ch] = lines
+            except Exception as e: print(e)
+            
+        with open("assets/bible.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        EOF
+        
+        # 변환 실행
+        python convert.py
+        ls -lh assets/bible.json
+
+    # 2. 플러터 설정
+    - uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.24.0'
+        flutter-version: '3.19.0'
         channel: 'stable'
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-
-    - name: Install dependencies and build
+    # 3. 진짜 네이티브 앱 빌드 (파이썬 없음!)
+    - name: Build APK
       run: |
-        pip install flet
-        flet build apk --verbose
+        flutter pub get
+        flutter build apk --release
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v4
       with:
-        name: bible-app-release
-        path: build/apk/**/*.apk
+        name: father-bible-native
+        path: build/app/outputs/flutter-apk/app-release.apk

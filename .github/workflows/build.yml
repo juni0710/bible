@@ -16,14 +16,14 @@ jobs:
       with:
         python-version: '3.11'
 
-    # 2. 성경 데이터 변환 (베트남어, 스페인어 포함 풀버전)
+    # 2. 성경 데이터 변환 (글자 깨짐 수정 버전)
     - name: Convert LFA to JSON
       run: |
         mkdir -p assets
         cat <<EOF > convert.py
         import os, zipfile, json, re
         
-        # [수정] 빠진 언어 없이 꽉 채운 리스트
+        # 모든 성경 리스트
         TARGETS = [
             ("korhrv.lfa", "개역한글 (기본)"),
             ("kornkrv.lfa", "개역개정"),
@@ -77,7 +77,6 @@ jobs:
         for fname, dname in TARGETS:
             path = os.path.join(base_path, fname)
             if not os.path.exists(path):
-                print(f"Skipping {fname} (Not found)")
                 continue
             
             data["bibles"][dname] = {}
@@ -89,7 +88,8 @@ jobs:
                         if m:
                             bk, ch = str(int(m.group(1))), str(int(m.group(2)))
                             with zf.open(n) as f:
-                                txt = f.read().decode('cp949', errors='ignore')
+                                # [핵심 수정] 무조건 UTF-8로 읽도록 강제 설정
+                                txt = f.read().decode('utf-8', errors='replace')
                                 lines = [l.strip() for l in txt.splitlines() if l.strip() and not l.startswith("[source")]
                                 if bk not in data["bibles"][dname]: data["bibles"][dname][bk] = {}
                                 data["bibles"][dname][bk][ch] = lines

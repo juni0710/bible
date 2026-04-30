@@ -113,11 +113,20 @@ jobs:
         flutter-version: '3.19.0'
         channel: 'stable'
 
-    # 5. 앱 생성 및 빌드
+    # 5. 앱 생성 및 패키지 설정, 빌드
     - name: Create and Build
       run: |
+        # 1. 안드로이드 플랫폼 뼈대 생성
         flutter create . --org com.bible.father --project-name father_bible --platforms android
+        
+        # 2. 외부 파일 접근 및 압축 해제를 위한 패키지 동적 추가
+        flutter pub add archive permission_handler
         flutter pub get
+        
+        # 3. AndroidManifest.xml 파일에 외부 저장소 접근 권한 강제 주입 (문법 오류 방지 버전)
+        sed -i 's/<application/<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" \/>\n    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" \/>\n    <application/g' android/app/src/main/AndroidManifest.xml
+        
+        # 4. 릴리즈 모드로 APK 빌드
         flutter build apk --release
 
     # 6. 결과물 업로드

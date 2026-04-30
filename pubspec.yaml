@@ -18,5 +18,4 @@ dependencies:
 
 flutter:
   uses-material-design: true
-  assets:
-    - assets/bible.json
+

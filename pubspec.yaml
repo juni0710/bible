@@ -15,6 +15,7 @@ dependencies:
   # --- 새롭게 추가된 필수 패키지 ---
   archive: ^3.6.1             # 외부 성경 파일(.lfa)의 압축(ZIP)을 풀기 위해 사용
   permission_handler: ^11.3.0 # 스마트폰의 Download 폴더 접근 권한을 얻기 위해 사용
+  http: ^1.2.1
 
 flutter:
   uses-material-design: true

@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:archive/archive.dart';
@@ -38,132 +37,157 @@ class BiblePage extends StatefulWidget {
 }
 
 class _BiblePageState extends State<BiblePage> {
-  Map<String, dynamic>? _data;
+  // 성경 데이터 구조: _data[버전이름][권번호(1~66)][장번호] = [절1, 절2, ...]
+  Map<String, dynamic> _data = {};
   List<String> _versions = [];
-  Map<String, String> _bookNames = {};
+  
+  // 권 이름 매핑 (하드코딩 - JSON에서 가져오지 않으므로 직접 정의)
+  final Map<String, String> _bookNames = {
+    "1": "창세기", "2": "출애굽기", "3": "레위기", "4": "민수기", "5": "신명기",
+    "6": "여호수아", "7": "사사기", "8": "룻기", "9": "사무엘상", "10": "사무엘하",
+    "11": "열왕기상", "12": "열왕기하", "13": "역대상", "14": "역대하", "15": "에스라",
+    "16": "느헤미야", "17": "에스더", "18": "욥기", "19": "시편", "20": "잠언",
+    "21": "전도서", "22": "아가", "23": "이사야", "24": "예레미야", "25": "예레미야애가",
+    "26": "에스겔", "27": "다니엘", "28": "호세아", "29": "요엘", "30": "아모스",
+    "31": "오바댜", "32": "요나", "33": "미가", "34": "나훔", "35": "하박국",
+    "36": "스바냐", "37": "학개", "38": "스가랴", "39": "말라기", "40": "마태복음",
+    "41": "마가복음", "42": "누가복음", "43": "요한복음", "44": "사도행전", "45": "로마서",
+    "46": "고린도전서", "47": "고린도후서", "48": "갈라디아서", "49": "에베소서", "50": "빌립보서",
+    "51": "골로새서", "52": "데살로니가전서", "53": "데살로니가후서", "54": "디모데전서", "55": "디모데후서",
+    "56": "디도서", "57": "빌레몬서", "58": "히브리서", "59": "야고보서", "60": "베드로전서",
+    "61": "베드로후서", "62": "요한일서", "63": "요한이서", "64": "요한삼서", "65": "유다서",
+    "66": "요한계시록"
+  };
+
+  // 외부 .lfa 파일명에 따른 표시 이름 매핑
+  final Map<String, String> _lfaNameMap = {
+    "korhrv": "개역한글",
+    "kornkrv": "개역개정",
+    "korklb": "현대인의 성경",
+    "koreasy": "쉬운성경",
+    "engNIV": "영어 NIV",
+    "ENGKJV": "영어 KJV",
+  };
 
   // 상태 변수
-  String _curVer = "";             // 메인 성경
-  List<String> _compareVers = [];  // 대조 성경 목록 (다중 선택)
+  String _curVer = "";
+  List<String> _compareVers = [];
   String _curBook = "1";
   String _curChap = "1";
-  double _fontSize = 22.0;         // 기본 글자 크기
+  double _fontSize = 22.0;
   bool _isLoading = true;
+  String _errorMessage = ""; // 에러 또는 안내 메시지 저장
 
   final ScrollController _scrollController = ScrollController();
-
-  // 외부 .lfa 파일명에 따른 예쁘게 보여줄 이름 매핑
-  final Map<String, String> _lfaNameMap = {
-    "korhrv": "개역한글 (외부)",
-    "kornkrv": "개역개정 (외부)",
-    "korklb": "현대인의 성경 (외부)",
-    "koreasy": "쉬운성경 (외부)",
-    "engNIV": "영어 NIV (외부)",
-    "ENGKJV": "영어 KJV (외부)",
-    // 필요한 이름이 있다면 계속 추가 가능합니다.
-  };
 
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _loadExternalLfaFiles();
   }
 
-  // Download/bible 폴더에서 .lfa 파일을 찾아 파싱하는 함수
+  // 핵심 로직: Download/bible 폴더에서 .lfa(ZIP) 파일을 찾아 파싱
   Future<void> _loadExternalLfaFiles() async {
-    if (await Permission.manageExternalStorage.request().isGranted || 
-        await Permission.storage.request().isGranted) {
-      
-      final directory = Directory('/storage/emulated/0/Download/bible');
-      
-      if (await directory.exists()) {
-        List<FileSystemEntity> files = directory.listSync();
-        final RegExp pat = RegExp(r'.*?(\d{2})_(\d+)\.[lL][fF][bB]$');
+    setState(() {
+      _isLoading = true;
+      _errorMessage = "";
+    });
 
-        for (var file in files) {
-          if (file.path.toLowerCase().endsWith('.lfa')) {
-            String fileName = file.path.split('/').last.split('.').first;
-            String displayName = _lfaNameMap[fileName] ?? "$fileName (외부)";
-            
-            try {
-              final bytes = File(file.path).readAsBytesSync();
-              final archive = ZipDecoder().decodeBytes(bytes);
+    try {
+      // 1. 안드로이드 11 이상 스토리지 접근 권한 요청
+      if (await Permission.manageExternalStorage.request().isGranted || 
+          await Permission.storage.request().isGranted) {
+        
+        final directory = Directory('/storage/emulated/0/Download/bible');
+        
+        if (await directory.exists()) {
+          List<FileSystemEntity> files = directory.listSync();
+          final RegExp pat = RegExp(r'.*?(\d{2})_(\d+)\.[lL][fF][bB]$');
+          bool fileFound = false;
 
-              Map<String, dynamic> bookData = {};
+          for (var file in files) {
+            if (file.path.toLowerCase().endsWith('.lfa')) {
+              fileFound = true;
+              String fileName = file.path.split('/').last.split('.').first;
+              String displayName = _lfaNameMap[fileName] ?? fileName;
+              
+              try {
+                // ZIP(LFA) 파일 압축 해제 및 메모리 로딩
+                final bytes = File(file.path).readAsBytesSync();
+                final archive = ZipDecoder().decodeBytes(bytes);
+                Map<String, dynamic> bookData = {};
 
-              for (final archiveFile in archive) {
-                if (archiveFile.isFile) {
-                  final match = pat.firstMatch(archiveFile.name);
-                  if (match != null) {
-                    final bk = int.parse(match.group(1)!).toString();
-                    final ch = int.parse(match.group(2)!).toString();
+                for (final archiveFile in archive) {
+                  if (archiveFile.isFile) {
+                    final match = pat.firstMatch(archiveFile.name);
+                    if (match != null) {
+                      final bk = int.parse(match.group(1)!).toString();
+                      final ch = int.parse(match.group(2)!).toString();
 
-                    final content = utf8.decode(archiveFile.content as List<int>, allowMalformed: true);
-                    final lines = content.split('\n')
-                        .map((l) => l.trim())
-                        .where((l) => l.isNotEmpty && !l.startsWith('[source'))
-                        .toList();
+                      final content = utf8.decode(archiveFile.content as List<int>, allowMalformed: true);
+                      final lines = content.split('\n')
+                          .map((l) => l.trim())
+                          .where((l) => l.isNotEmpty && !l.startsWith('[source'))
+                          .toList();
 
-                    if (!bookData.containsKey(bk)) bookData[bk] = {};
-                    bookData[bk][ch] = lines;
+                      if (!bookData.containsKey(bk)) bookData[bk] = {};
+                      bookData[bk][ch] = lines;
+                    }
                   }
                 }
-              }
 
-              if (bookData.isNotEmpty) {
-                _data![displayName] = bookData;
-                if (!_versions.contains(displayName)) {
-                  _versions.add(displayName);
+                if (bookData.isNotEmpty) {
+                  _data[displayName] = bookData;
+                  if (!_versions.contains(displayName)) {
+                    _versions.add(displayName);
+                  }
+                  debugPrint("로딩 완료: $displayName");
                 }
-                debugPrint("$displayName 외부 로딩 완료!");
+              } catch (e) {
+                debugPrint("파일 파싱 에러 (${file.path}): $e");
               }
-
-            } catch (e) {
-              debugPrint("파일 읽기 에러 (${file.path}): $e");
             }
           }
+
+          if (!fileFound) {
+            _errorMessage = "Download/bible 폴더에\n.lfa 성경 파일이 없습니다.\n파일을 넣고 앱을 다시 실행해주세요.";
+          }
+        } else {
+          // 폴더가 없으면 생성
+          await directory.create(recursive: true);
+          _errorMessage = "스마트폰 내부에 성경 폴더를 생성했습니다.\n\n[내 파일 > 다운로드 > bible] 폴더에\n.lfa 성경 파일을 넣고 다시 실행해주세요.";
         }
       } else {
-        // 폴더가 없으면 사용자가 나중에 넣을 수 있게 미리 생성
-        await directory.create(recursive: true);
+        _errorMessage = "파일 접근 권한이 필요합니다.\n설정에서 저장소 권한을 허용해주세요.";
       }
-    } else {
-      debugPrint("저장소 권한이 거부되었습니다.");
-    }
-  }
-
-  Future<void> _loadData() async {
-    try {
-      // 1. 기본 내장 JSON 데이터 불러오기
-      final String jsonString = await rootBundle.loadString('assets/bible.json');
-      final Map<String, dynamic> jsonData = json.decode(jsonString);
-
-      _data = jsonData['bibles'];
-      _bookNames = Map<String, String>.from(jsonData['book_names']);
-      _versions = _data!.keys.toList();
-
-      // 2. 외부 다운로드 폴더에서 .lfa 파일 불러와서 합치기
-      await _loadExternalLfaFiles();
-
-      setState(() {
-        if (_versions.isNotEmpty) {
-          _curVer = _versions.contains("개역한글 (기본)") ? "개역한글 (기본)" : 
-                    (_versions.contains("개역한글") ? "개역한글" : _versions.first);
-        }
-        _isLoading = false;
-      });
-      _loadSettings();
     } catch (e) {
-      debugPrint("Error loading data: $e");
-      setState(() => _isLoading = false);
+      _errorMessage = "성경 데이터를 불러오는 중 오류가 발생했습니다.\n$e";
+    }
+
+    setState(() {
+      if (_versions.isNotEmpty) {
+        _curVer = _versions.first; // 첫 번째 파싱된 성경을 기본으로 설정
+      }
+      _isLoading = false;
+    });
+
+    if (_versions.isNotEmpty) {
+      _loadSettings();
     }
   }
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _curVer = prefs.getString('ver') ?? _curVer;
-      _compareVers = prefs.getStringList('compareVers') ?? []; 
+      String savedVer = prefs.getString('ver') ?? "";
+      if (_versions.contains(savedVer)) {
+        _curVer = savedVer;
+      }
+      
+      // 저장된 대조 성경 목록 중 현재 로드된 버전들만 필터링해서 가져옴
+      List<String> savedCompareVers = prefs.getStringList('compareVers') ?? [];
+      _compareVers = savedCompareVers.where((ver) => _versions.contains(ver)).toList();
+      
       _curBook = prefs.getString('book') ?? "1";
       _curChap = prefs.getString('chap') ?? "1";
       _fontSize = prefs.getDouble('fontSize') ?? 22.0; 
@@ -180,11 +204,13 @@ class _BiblePageState extends State<BiblePage> {
   }
 
   void _navigate(int direction) {
+    if (_data.isEmpty || !_data.containsKey(_curVer)) return;
+
     int cBook = int.parse(_curBook);
     int cChap = int.parse(_curChap);
     
     if (direction == 1) { // 다음
-      if (_data![_curVer][cBook.toString()].containsKey((cChap + 1).toString())) {
+      if (_data[_curVer][cBook.toString()]?.containsKey((cChap + 1).toString()) == true) {
         cChap++;
       } else if (cBook < 66) {
         cBook++;
@@ -195,6 +221,7 @@ class _BiblePageState extends State<BiblePage> {
         cChap--;
       } else if (cBook > 1) {
         cBook--;
+        // 이전 권으로 갈 때는 그 권의 1장으로 이동
         cChap = 1; 
       }
     }
@@ -204,16 +231,61 @@ class _BiblePageState extends State<BiblePage> {
       _curChap = cChap.toString();
     });
     _saveSettings();
-    _scrollController.jumpTo(0);
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    // 1. 로딩 중 화면
     if (_isLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator(color: Colors.amber)));
+      return const Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(color: Colors.amber),
+              SizedBox(height: 20),
+              Text("성경 파일을 찾고 있습니다...", style: TextStyle(color: Colors.grey)),
+            ],
+          )
+        )
+      );
     }
 
-    final mainTextList = _data![_curVer][_curBook][_curChap] as List<dynamic>? ?? [];
+    // 2. 에러 또는 파일 없음 화면
+    if (_errorMessage.isNotEmpty || _data.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(backgroundColor: const Color(0xFF1E1E1E), title: const Text("안내")),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(30.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.folder_open, size: 80, color: Colors.amber),
+                const SizedBox(height: 20),
+                Text(
+                  _errorMessage.isNotEmpty ? _errorMessage : "알 수 없는 오류가 발생했습니다.",
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 18, height: 1.5),
+                ),
+                const SizedBox(height: 40),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black),
+                  onPressed: _loadExternalLfaFiles,
+                  child: const Text("다시 시도", style: TextStyle(fontWeight: FontWeight.bold)),
+                )
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // 3. 정상 구동 화면
+    final mainTextList = _data[_curVer]?[_curBook]?[_curChap] as List<dynamic>? ?? [];
 
     return Scaffold(
       appBar: AppBar(
@@ -237,64 +309,63 @@ class _BiblePageState extends State<BiblePage> {
       body: Column(
         children: [
           Expanded(
-            child: ListView.separated(
-              controller: _scrollController,
-              padding: const EdgeInsets.all(20),
-              itemCount: mainTextList.length,
-              separatorBuilder: (ctx, i) => const Divider(color: Color(0xFF333333)),
-              itemBuilder: (context, index) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // 절 번호 + 메인 성경
-                      Row(
+            child: mainTextList.isEmpty 
+              ? const Center(child: Text("이 장에는 내용이 없습니다.", style: TextStyle(color: Colors.grey)))
+              : ListView.separated(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.all(20),
+                  itemCount: mainTextList.length,
+                  separatorBuilder: (ctx, i) => const Divider(color: Color(0xFF333333)),
+                  itemBuilder: (context, index) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          SizedBox(
-                            width: 30,
-                            child: Text("${index + 1}", 
-                              style: const TextStyle(color: Colors.amber, fontSize: 16, fontWeight: FontWeight.bold)),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SizedBox(
+                                width: 30,
+                                child: Text("${index + 1}", 
+                                  style: const TextStyle(color: Colors.amber, fontSize: 16, fontWeight: FontWeight.bold)),
+                              ),
+                              Expanded(
+                                child: Text(mainTextList[index].toString(),
+                                  style: GoogleFonts.nanumMyeongjo(
+                                    color: const Color(0xFFE0E0E0), 
+                                    fontSize: _fontSize, 
+                                    height: 1.5,
+                                    fontWeight: FontWeight.w500
+                                  )),
+                              ),
+                            ],
                           ),
-                          Expanded(
-                            child: Text(mainTextList[index].toString(),
-                              style: GoogleFonts.nanumMyeongjo(
-                                color: const Color(0xFFE0E0E0), 
-                                fontSize: _fontSize, 
-                                height: 1.5,
-                                fontWeight: FontWeight.w500
-                              )),
-                          ),
+                          
+                          if (_compareVers.isNotEmpty)
+                            ..._compareVers.where((ver) => _data.containsKey(ver)).map((compVer) {
+                              final compTextList = _data[compVer]?[_curBook]?[_curChap] as List<dynamic>? ?? [];
+                              if (index < compTextList.length) {
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 8, left: 30),
+                                  child: Text(
+                                    "└ [$compVer] ${compTextList[index]}",
+                                    style: GoogleFonts.nanumMyeongjo(
+                                      color: Colors.grey, 
+                                      fontSize: _fontSize * 0.75, 
+                                      height: 1.4
+                                    ),
+                                  ),
+                                );
+                              }
+                              return const SizedBox.shrink();
+                            }),
                         ],
                       ),
-                      
-                      // 대조 성경 다중 렌더링
-                      if (_compareVers.isNotEmpty)
-                        ..._compareVers.where((ver) => _data!.containsKey(ver)).map((compVer) {
-                          final compTextList = _data![compVer][_curBook][_curChap] as List<dynamic>? ?? [];
-                          if (index < compTextList.length) {
-                            return Padding(
-                              padding: const EdgeInsets.only(top: 8, left: 30),
-                              child: Text(
-                                "└ [$compVer] ${compTextList[index]}",
-                                style: GoogleFonts.nanumMyeongjo(
-                                  color: Colors.grey, 
-                                  fontSize: _fontSize * 0.75, 
-                                  height: 1.4
-                                ),
-                              ),
-                            );
-                          }
-                          return const SizedBox.shrink();
-                        }),
-                    ],
-                  ),
-                );
-              },
-            ),
+                    );
+                  },
+                ),
           ),
-          // 하단 이동 버튼
           Container(
             color: const Color(0xFF1E1E1E),
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 20),
@@ -335,7 +406,6 @@ class _BiblePageState extends State<BiblePage> {
                   controller: controller,
                   padding: const EdgeInsets.all(20),
                   children: [
-                    // 글자 크기 설정
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -369,7 +439,6 @@ class _BiblePageState extends State<BiblePage> {
                     ),
                     const Divider(color: Colors.grey, height: 40),
 
-                    // 메인 성경 설정
                     const Text("메인 성경 선택", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 10),
                     ..._versions.map((v) => RadioListTile<String>(
@@ -384,14 +453,12 @@ class _BiblePageState extends State<BiblePage> {
                         });
                         setState(() {});
                         _saveSettings();
-                        Navigator.pop(context); // 메인 성경 선택 시 바텀시트 닫기
+                        Navigator.pop(context);
                       },
                     )),
                     const Divider(color: Colors.grey, height: 40),
                     
-                    // 대조 성경 설정
                     const Text("함께 볼 성경 (대조 다중선택)", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
-                    const Text("여러 개를 선택하여 동시에 비교할 수 있습니다.", style: TextStyle(color: Colors.grey, fontSize: 12)),
                     const SizedBox(height: 10),
                     ..._versions.where((v) => v != _curVer).map((v) => CheckboxListTile(
                       title: Text(v, style: TextStyle(color: _compareVers.contains(v) ? Colors.amber : Colors.white)),
@@ -438,6 +505,8 @@ class _BiblePageState extends State<BiblePage> {
                     onTap: () {
                       setState(() { _curBook = (i+1).toString(); _curChap = "1"; });
                       Navigator.pop(context);
+                      _saveSettings();
+                      if (_scrollController.hasClients) _scrollController.jumpTo(0);
                     },
                   ),
                 ),
@@ -445,12 +514,14 @@ class _BiblePageState extends State<BiblePage> {
               const VerticalDivider(color: Colors.grey),
               Expanded(
                 child: ListView.builder(
-                  itemCount: _data![_curVer][_curBook].length,
+                  itemCount: _data[_curVer]?[_curBook]?.length ?? 0,
                   itemBuilder: (c, i) => ListTile(
                     title: Text("${i+1}장", style: const TextStyle(color: Colors.white)),
                     onTap: () {
                       setState(() { _curChap = (i+1).toString(); });
                       Navigator.pop(context);
+                      _saveSettings();
+                      if (_scrollController.hasClients) _scrollController.jumpTo(0);
                     },
                   ),
                 ),

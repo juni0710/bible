@@ -1,8 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:archive/archive.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const MyApp());
@@ -40,13 +43,25 @@ class _BiblePageState extends State<BiblePage> {
   Map<String, String> _bookNames = {};
 
   // 상태 변수
-  String _curVer = "";       // 메인 성경 (예: 개역한글)
-  String? _compareVer;       // 대조 성경 (예: 영어NIV, 없으면 null)
+  String _curVer = "";             // 메인 성경
+  List<String> _compareVers = [];  // 대조 성경 목록 (다중 선택)
   String _curBook = "1";
   String _curChap = "1";
+  double _fontSize = 22.0;         // 기본 글자 크기
   bool _isLoading = true;
 
   final ScrollController _scrollController = ScrollController();
+
+  // 외부 .lfa 파일명에 따른 예쁘게 보여줄 이름 매핑
+  final Map<String, String> _lfaNameMap = {
+    "korhrv": "개역한글 (외부)",
+    "kornkrv": "개역개정 (외부)",
+    "korklb": "현대인의 성경 (외부)",
+    "koreasy": "쉬운성경 (외부)",
+    "engNIV": "영어 NIV (외부)",
+    "ENGKJV": "영어 KJV (외부)",
+    // 필요한 이름이 있다면 계속 추가 가능합니다.
+  };
 
   @override
   void initState() {
@@ -54,17 +69,83 @@ class _BiblePageState extends State<BiblePage> {
     _loadData();
   }
 
+  // Download/bible 폴더에서 .lfa 파일을 찾아 파싱하는 함수
+  Future<void> _loadExternalLfaFiles() async {
+    if (await Permission.manageExternalStorage.request().isGranted || 
+        await Permission.storage.request().isGranted) {
+      
+      final directory = Directory('/storage/emulated/0/Download/bible');
+      
+      if (await directory.exists()) {
+        List<FileSystemEntity> files = directory.listSync();
+        final RegExp pat = RegExp(r'.*?(\d{2})_(\d+)\.[lL][fF][bB]$');
+
+        for (var file in files) {
+          if (file.path.toLowerCase().endsWith('.lfa')) {
+            String fileName = file.path.split('/').last.split('.').first;
+            String displayName = _lfaNameMap[fileName] ?? "$fileName (외부)";
+            
+            try {
+              final bytes = File(file.path).readAsBytesSync();
+              final archive = ZipDecoder().decodeBytes(bytes);
+
+              Map<String, dynamic> bookData = {};
+
+              for (final archiveFile in archive) {
+                if (archiveFile.isFile) {
+                  final match = pat.firstMatch(archiveFile.name);
+                  if (match != null) {
+                    final bk = int.parse(match.group(1)!).toString();
+                    final ch = int.parse(match.group(2)!).toString();
+
+                    final content = utf8.decode(archiveFile.content as List<int>, allowMalformed: true);
+                    final lines = content.split('\n')
+                        .map((l) => l.trim())
+                        .where((l) => l.isNotEmpty && !l.startsWith('[source'))
+                        .toList();
+
+                    if (!bookData.containsKey(bk)) bookData[bk] = {};
+                    bookData[bk][ch] = lines;
+                  }
+                }
+              }
+
+              if (bookData.isNotEmpty) {
+                _data![displayName] = bookData;
+                if (!_versions.contains(displayName)) {
+                  _versions.add(displayName);
+                }
+                debugPrint("$displayName 외부 로딩 완료!");
+              }
+
+            } catch (e) {
+              debugPrint("파일 읽기 에러 (${file.path}): $e");
+            }
+          }
+        }
+      } else {
+        // 폴더가 없으면 사용자가 나중에 넣을 수 있게 미리 생성
+        await directory.create(recursive: true);
+      }
+    } else {
+      debugPrint("저장소 권한이 거부되었습니다.");
+    }
+  }
+
   Future<void> _loadData() async {
     try {
+      // 1. 기본 내장 JSON 데이터 불러오기
       final String jsonString = await rootBundle.loadString('assets/bible.json');
       final Map<String, dynamic> jsonData = json.decode(jsonString);
 
+      _data = jsonData['bibles'];
+      _bookNames = Map<String, String>.from(jsonData['book_names']);
+      _versions = _data!.keys.toList();
+
+      // 2. 외부 다운로드 폴더에서 .lfa 파일 불러와서 합치기
+      await _loadExternalLfaFiles();
+
       setState(() {
-        _data = jsonData['bibles'];
-        _bookNames = Map<String, String>.from(jsonData['book_names']);
-        _versions = _data!.keys.toList();
-        
-        // 기본값: 개역한글 우선, 없으면 첫 번째
         if (_versions.isNotEmpty) {
           _curVer = _versions.contains("개역한글 (기본)") ? "개역한글 (기본)" : 
                     (_versions.contains("개역한글") ? "개역한글" : _versions.first);
@@ -74,6 +155,7 @@ class _BiblePageState extends State<BiblePage> {
       _loadSettings();
     } catch (e) {
       debugPrint("Error loading data: $e");
+      setState(() => _isLoading = false);
     }
   }
 
@@ -81,24 +163,20 @@ class _BiblePageState extends State<BiblePage> {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _curVer = prefs.getString('ver') ?? _curVer;
-      _compareVer = prefs.getString('compare'); // 대조 성경 불러오기
-      if (_compareVer == "") _compareVer = null; // 빈 문자열이면 null 처리
-      
+      _compareVers = prefs.getStringList('compareVers') ?? []; 
       _curBook = prefs.getString('book') ?? "1";
       _curChap = prefs.getString('chap') ?? "1";
+      _fontSize = prefs.getDouble('fontSize') ?? 22.0; 
     });
   }
 
   Future<void> _saveSettings() async {
     final prefs = await SharedPreferences.getInstance();
     prefs.setString('ver', _curVer);
-    if (_compareVer != null) {
-      prefs.setString('compare', _compareVer!);
-    } else {
-      prefs.remove('compare');
-    }
+    prefs.setStringList('compareVers', _compareVers); 
     prefs.setString('book', _curBook);
     prefs.setString('chap', _curChap);
+    prefs.setDouble('fontSize', _fontSize); 
   }
 
   void _navigate(int direction) {
@@ -135,14 +213,7 @@ class _BiblePageState extends State<BiblePage> {
       return const Scaffold(body: Center(child: CircularProgressIndicator(color: Colors.amber)));
     }
 
-    // 데이터 가져오기
     final mainTextList = _data![_curVer][_curBook][_curChap] as List<dynamic>? ?? [];
-    List<dynamic> compareTextList = [];
-    
-    // 대조 성경이 선택되어 있으면 가져오기
-    if (_compareVer != null && _data!.containsKey(_compareVer)) {
-       compareTextList = _data![_compareVer][_curBook][_curChap] as List<dynamic>? ?? [];
-    }
 
     return Scaffold(
       appBar: AppBar(
@@ -152,9 +223,11 @@ class _BiblePageState extends State<BiblePage> {
           children: [
             Text("${_bookNames[_curBook] ?? '성경'} $_curChap장", 
               style: GoogleFonts.nanumMyeongjo(fontWeight: FontWeight.bold, fontSize: 20)),
-            // 어떤 성경인지 작게 표시
-            Text("$_curVer ${ _compareVer != null ? '+ $_compareVer' : ''}", 
-              style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            Text(
+              "$_curVer ${_compareVers.isNotEmpty ? '+ ${_compareVers.join(", ")}' : ''}", 
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+              overflow: TextOverflow.ellipsis,
+            ),
           ],
         ),
         actions: [
@@ -188,7 +261,7 @@ class _BiblePageState extends State<BiblePage> {
                             child: Text(mainTextList[index].toString(),
                               style: GoogleFonts.nanumMyeongjo(
                                 color: const Color(0xFFE0E0E0), 
-                                fontSize: 22, // 메인 성경은 크게
+                                fontSize: _fontSize, 
                                 height: 1.5,
                                 fontWeight: FontWeight.w500
                               )),
@@ -196,19 +269,25 @@ class _BiblePageState extends State<BiblePage> {
                         ],
                       ),
                       
-                      // 대조 성경 (있을 때만 표시)
-                      if (_compareVer != null && index < compareTextList.length)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8, left: 30), // 들여쓰기
-                          child: Text(
-                            "└ [$_compareVer] ${compareTextList[index]}",
-                            style: GoogleFonts.nanumMyeongjo(
-                              color: Colors.grey, // 회색으로 연하게
-                              fontSize: 16,       // 조금 작게
-                              height: 1.4
-                            ),
-                          ),
-                        ),
+                      // 대조 성경 다중 렌더링
+                      if (_compareVers.isNotEmpty)
+                        ..._compareVers.where((ver) => _data!.containsKey(ver)).map((compVer) {
+                          final compTextList = _data![compVer][_curBook][_curChap] as List<dynamic>? ?? [];
+                          if (index < compTextList.length) {
+                            return Padding(
+                              padding: const EdgeInsets.only(top: 8, left: 30),
+                              child: Text(
+                                "└ [$compVer] ${compTextList[index]}",
+                                style: GoogleFonts.nanumMyeongjo(
+                                  color: Colors.grey, 
+                                  fontSize: _fontSize * 0.75, 
+                                  height: 1.4
+                                ),
+                              ),
+                            );
+                          }
+                          return const SizedBox.shrink();
+                        }),
                     ],
                   ),
                 );
@@ -233,7 +312,6 @@ class _BiblePageState extends State<BiblePage> {
           )
         ],
       ),
-      // 권/장 선택용 하단 팝업 (제목 클릭 시)
       floatingActionButton: FloatingActionButton(
         backgroundColor: const Color(0xFF333333),
         onPressed: _showSelectionModal,
@@ -242,7 +320,6 @@ class _BiblePageState extends State<BiblePage> {
     );
   }
 
-  // --- 메뉴 (Drawer) ---
   void _openDrawer(BuildContext context) {
     showModalBottomSheet(
       context: context,
@@ -252,55 +329,90 @@ class _BiblePageState extends State<BiblePage> {
         return DraggableScrollableSheet(
           initialChildSize: 0.8,
           builder: (_, controller) {
-            return ListView(
-              controller: controller,
-              padding: const EdgeInsets.all(20),
-              children: [
-                const Text("메인 성경 선택", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 10),
-                ..._versions.map((v) => RadioListTile<String>(
-                  title: Text(v, style: const TextStyle(color: Colors.white)),
-                  value: v,
-                  groupValue: _curVer,
-                  activeColor: Colors.amber,
-                  onChanged: (val) {
-                    setState(() { _curVer = val!; });
-                    _saveSettings();
-                    Navigator.pop(context);
-                  },
-                )),
-                const Divider(color: Colors.grey, height: 40),
-                
-                const Text("함께 볼 성경 (대조)", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
-                const Text("선택하면 메인 성경 아래에 같이 나옵니다.", style: TextStyle(color: Colors.grey, fontSize: 12)),
-                const SizedBox(height: 10),
-                
-                // '없음' 옵션 추가
-                RadioListTile<String?>(
-                  title: const Text("(대조 없음)", style: TextStyle(color: Colors.grey)),
-                  value: null,
-                  groupValue: _compareVer,
-                  activeColor: Colors.amber,
-                  onChanged: (val) {
-                    setState(() { _compareVer = null; });
-                    _saveSettings();
-                    Navigator.pop(context);
-                  },
-                ),
-                ..._versions.map((v) => RadioListTile<String?>(
-                  title: Text(v, style: TextStyle(color: _compareVer == v ? Colors.amber : Colors.white)),
-                  value: v,
-                  groupValue: _compareVer,
-                  activeColor: Colors.amber,
-                  onChanged: (val) {
-                    // 메인 성경과 같으면 대조 의미 없으니 체크
-                    if (val == _curVer) return; 
-                    setState(() { _compareVer = val; });
-                    _saveSettings();
-                    Navigator.pop(context);
-                  },
-                )),
-              ],
+            return StatefulBuilder( 
+              builder: (BuildContext context, StateSetter setModalState) {
+                return ListView(
+                  controller: controller,
+                  padding: const EdgeInsets.all(20),
+                  children: [
+                    // 글자 크기 설정
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text("글자 크기", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
+                        Row(
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.remove_circle_outline, color: Colors.white),
+                              onPressed: () {
+                                if (_fontSize > 10) {
+                                  setModalState(() => _fontSize -= 2);
+                                  setState(() {});
+                                  _saveSettings();
+                                }
+                              },
+                            ),
+                            Text("${_fontSize.toInt()}", style: const TextStyle(color: Colors.white, fontSize: 18)),
+                            IconButton(
+                              icon: const Icon(Icons.add_circle_outline, color: Colors.white),
+                              onPressed: () {
+                                if (_fontSize < 50) {
+                                  setModalState(() => _fontSize += 2);
+                                  setState(() {});
+                                  _saveSettings();
+                                }
+                              },
+                            ),
+                          ],
+                        )
+                      ],
+                    ),
+                    const Divider(color: Colors.grey, height: 40),
+
+                    // 메인 성경 설정
+                    const Text("메인 성경 선택", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 10),
+                    ..._versions.map((v) => RadioListTile<String>(
+                      title: Text(v, style: const TextStyle(color: Colors.white)),
+                      value: v,
+                      groupValue: _curVer,
+                      activeColor: Colors.amber,
+                      onChanged: (val) {
+                        setModalState(() {
+                          _curVer = val!;
+                          _compareVers.remove(_curVer);
+                        });
+                        setState(() {});
+                        _saveSettings();
+                        Navigator.pop(context); // 메인 성경 선택 시 바텀시트 닫기
+                      },
+                    )),
+                    const Divider(color: Colors.grey, height: 40),
+                    
+                    // 대조 성경 설정
+                    const Text("함께 볼 성경 (대조 다중선택)", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
+                    const Text("여러 개를 선택하여 동시에 비교할 수 있습니다.", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    const SizedBox(height: 10),
+                    ..._versions.where((v) => v != _curVer).map((v) => CheckboxListTile(
+                      title: Text(v, style: TextStyle(color: _compareVers.contains(v) ? Colors.amber : Colors.white)),
+                      value: _compareVers.contains(v),
+                      activeColor: Colors.amber,
+                      checkColor: Colors.black,
+                      onChanged: (bool? isChecked) {
+                        setModalState(() {
+                          if (isChecked == true) {
+                            _compareVers.add(v);
+                          } else {
+                            _compareVers.remove(v);
+                          }
+                        });
+                        setState(() {});
+                        _saveSettings();
+                      },
+                    )),
+                  ],
+                );
+              }
             );
           },
         );
@@ -308,7 +420,6 @@ class _BiblePageState extends State<BiblePage> {
     );
   }
 
-  // 성경/장 선택 모달
   void _showSelectionModal() {
     showModalBottomSheet(
       context: context,

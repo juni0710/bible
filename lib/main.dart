@@ -58,22 +58,35 @@ class _BiblePageState extends State<BiblePage> {
     "66": "요한계시록"
   };
 
-  // 다운로드 가능한 성경 전체 목록 매핑
+  // 요청하신 전체 성경 리스트 매핑
   final Map<String, String> _availableDownloads = {
     "korhrv": "개역한글 (기본)",
     "kornkrv": "개역개정",
     "korklb": "현대인의 성경",
     "koreasy": "쉬운성경",
-    "kornrsv": "새번역",
-    "kordob": "우리말 성경",
-    "korktv": "바른성경",
-    "korcath": "가톨릭 성경",
     "korHKJV": "킹제임스 흠정역",
+    "korcath": "가톨릭 성경",
+    "kordob": "우리말 성경",
+    "kornrsv": "새번역",
+    "korktv": "바른성경",
     "korNKCB": "공동번역 개정판",
+    "kornkcb": "공동번역 개정판 (기타)", 
+    "kchhrv": "국한문 개역한글",
+    "kchnkrv": "국한문 개역개정",
+    "kchktv": "국한문 바른성경",
     "engNIV": "영어 NIV",
     "ENGKJV": "영어 KJV",
     "engNASB": "영어 NASB",
     "engnlt": "영어 NLT",
+    "chnncv": "중국어 (NCV)",
+    "chnncvtr": "중국어 (번체)",
+    "chnunisimpnospace": "중국어 (간체)",
+    "jpnjct": "일본어 (JCT)",
+    "jpnnew": "일본어 (신역)",
+    "vietnamese": "베트남어",
+    "spnrei": "스페인어",
+    "gerlut": "독일어",
+    "latvul": "라틴어"
   };
 
   String _curVer = "";
@@ -183,40 +196,61 @@ class _BiblePageState extends State<BiblePage> {
     }
   }
 
-  Future<void> _downloadFromGithub(String fileName) async {
+  // 여러 파일을 한 번에 다운로드하는 함수
+  Future<void> _downloadMultipleFromGithub(List<String> fileNames) async {
+    if (fileNames.isEmpty) return;
+
     if (!await _requestStoragePermission()) {
       setState(() => _errorMessage = "저장소 권한이 필요합니다.");
       return;
     }
 
-    String displayName = _availableDownloads[fileName] ?? fileName;
     setState(() {
       _isLoading = true;
-      _errorMessage = "[$displayName] 다운로드 중입니다...\n잠시만 기다려주세요.";
+      _errorMessage = "다운로드를 준비 중입니다...";
     });
+
+    int successCount = 0;
+    List<String> failedFiles = [];
 
     try {
       final directory = Directory('/storage/emulated/0/Download/bible');
       if (!await directory.exists()) await directory.create(recursive: true);
 
-      final url = 'https://raw.githubusercontent.com/juni0710/bible/main/assets/bibles/$fileName.lfa';
-      final savePath = '${directory.path}/$fileName.lfa';
-      final response = await http.get(Uri.parse(url));
-
-      if (response.statusCode == 200) {
-        final file = File(savePath);
-        await file.writeAsBytes(response.bodyBytes);
-        await _loadExternalLfaFiles(); 
-      } else {
+      for (int i = 0; i < fileNames.length; i++) {
+        String fileName = fileNames[i];
+        String displayName = _availableDownloads[fileName] ?? fileName;
+        
         setState(() {
-          _isLoading = false;
-          _errorMessage = "다운로드 실패: $displayName 파일이 깃허브에 없습니다.";
+          _errorMessage = "[$displayName] 다운로드 중... (${i + 1}/${fileNames.length})";
+        });
+
+        final url = 'https://raw.githubusercontent.com/juni0710/bible/main/assets/bibles/$fileName.lfa';
+        final savePath = '${directory.path}/$fileName.lfa';
+        final response = await http.get(Uri.parse(url));
+
+        if (response.statusCode == 200) {
+          final file = File(savePath);
+          await file.writeAsBytes(response.bodyBytes);
+          successCount++;
+        } else {
+          failedFiles.add(displayName);
+        }
+      }
+
+      // 파싱 시 에러 메시지 덮어쓰기 방지를 위해 다운로드 성공 여부 기록
+      await _loadExternalLfaFiles(); 
+
+      if (failedFiles.isNotEmpty) {
+        setState(() {
+          _errorMessage = "다운로드 완료 ($successCount 성공).\n실패 항목: ${failedFiles.join(', ')}";
         });
       }
+
     } catch (e) {
       setState(() {
         _isLoading = false;
-        _errorMessage = "다운로드 오류 발생:\n$e";
+        _errorMessage = "다운로드 중 오류 발생:\n$e";
       });
     }
   }
@@ -306,15 +340,20 @@ class _BiblePageState extends State<BiblePage> {
                 ),
                 const SizedBox(height: 40),
                 ElevatedButton.icon(
-                  icon: const Icon(Icons.list),
-                  label: const Text("성경 다운로드 목록 열기", style: TextStyle(fontWeight: FontWeight.bold)),
+                  icon: const Icon(Icons.download),
+                  label: const Text("개역한글(기본) 빠른 다운로드", style: TextStyle(fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.amber, 
                     foregroundColor: Colors.black,
                     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12)
                   ),
-                  onPressed: () => _showDownloadModal(context),
+                  onPressed: () => _downloadMultipleFromGithub(['korhrv']),
                 ),
+                const SizedBox(height: 10),
+                TextButton(
+                  onPressed: () => _showDownloadModal(context), 
+                  child: const Text("목록에서 직접 선택하기", style: TextStyle(color: Colors.grey))
+                )
               ],
             ),
           ),
@@ -427,44 +466,94 @@ class _BiblePageState extends State<BiblePage> {
     );
   }
 
-  // --- 다운로드 목록 모달 (원하는 성경 선택) ---
+  // --- 개선된 다중 다운로드 모달 ---
   void _showDownloadModal(BuildContext context) {
+    Set<String> selectedFiles = {};
+
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF222222),
       isScrollControlled: true,
       builder: (ctx) {
-        return DraggableScrollableSheet(
-          initialChildSize: 0.6,
-          maxChildSize: 0.9,
-          builder: (_, controller) {
-            return ListView(
-              controller: controller,
-              padding: const EdgeInsets.all(20),
-              children: [
-                const Text("성경 추가 다운로드", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 10),
-                const Text("설치할 성경을 선택하세요. 이미 설치된 항목은 체크 표시됩니다.", style: TextStyle(color: Colors.grey, fontSize: 13)),
-                const Divider(color: Colors.grey, height: 30),
-                ..._availableDownloads.entries.map((entry) {
-                  String fileCode = entry.key;
-                  String displayName = entry.value;
-                  bool isDownloaded = _versions.contains(displayName);
-                  
-                  return ListTile(
-                    title: Text(displayName, style: TextStyle(color: isDownloaded ? Colors.grey : Colors.white)),
-                    trailing: isDownloaded 
-                      ? const Icon(Icons.check_circle, color: Colors.green)
-                      : const Icon(Icons.download, color: Colors.amber),
-                    onTap: isDownloaded ? null : () {
-                      Navigator.pop(ctx); // 모달 닫기
-                      _downloadFromGithub(fileCode);
-                    },
-                  );
-                }),
-              ],
-            );
-          }
+        return FractionallySizedBox(
+          heightFactor: 0.85, // 화면의 85% 높이 차지
+          child: StatefulBuilder(
+            builder: (BuildContext context, StateSetter setModalState) {
+              return Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text("성경 다운로드 센터", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
+                            IconButton(
+                              icon: const Icon(Icons.close, color: Colors.grey),
+                              onPressed: () => Navigator.pop(ctx),
+                            )
+                          ],
+                        ),
+                        const SizedBox(height: 5),
+                        const Text("필요한 성경을 체크하고 하단의 다운로드 버튼을 누르세요.\n(초록색 체크는 이미 설치된 성경입니다)", style: TextStyle(color: Colors.grey, fontSize: 13, height: 1.4)),
+                      ],
+                    ),
+                  ),
+                  const Divider(color: Colors.grey, height: 1),
+                  Expanded(
+                    child: ListView(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                      children: _availableDownloads.entries.map((entry) {
+                        String fileCode = entry.key;
+                        String displayName = entry.value;
+                        bool isDownloaded = _versions.contains(displayName);
+                        
+                        return CheckboxListTile(
+                          title: Text(displayName, style: TextStyle(color: isDownloaded ? Colors.grey : Colors.white, fontWeight: isDownloaded ? FontWeight.normal : FontWeight.bold)),
+                          subtitle: isDownloaded ? const Text("설치됨", style: TextStyle(color: Colors.green, fontSize: 12)) : null,
+                          value: isDownloaded ? true : selectedFiles.contains(fileCode),
+                          activeColor: isDownloaded ? Colors.green : Colors.amber,
+                          checkColor: Colors.black,
+                          onChanged: isDownloaded ? null : (bool? value) {
+                            setModalState(() {
+                              if (value == true) {
+                                selectedFiles.add(fileCode);
+                              } else {
+                                selectedFiles.remove(fileCode);
+                              }
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(20),
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF1A1A1A),
+                      border: Border(top: BorderSide(color: Color(0xFF333333)))
+                    ),
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.download),
+                      label: Text(selectedFiles.isEmpty ? "선택된 항목이 없습니다" : "${selectedFiles.length}개 항목 일괄 다운로드", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: selectedFiles.isEmpty ? Colors.grey : Colors.amber,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 15)
+                      ),
+                      onPressed: selectedFiles.isEmpty ? null : () {
+                        Navigator.pop(ctx);
+                        _downloadMultipleFromGithub(selectedFiles.toList());
+                      },
+                    ),
+                  )
+                ],
+              );
+            }
+          ),
         );
       }
     );
@@ -558,11 +647,11 @@ class _BiblePageState extends State<BiblePage> {
                     )),
                     const Divider(color: Colors.grey, height: 40),
                     
-                    const Text("성경 추가 다운로드", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
+                    const Text("성경 추가 관리", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 10),
                     ElevatedButton.icon(
                       icon: const Icon(Icons.cloud_download),
-                      label: const Text("다운로드 목록 열기", style: TextStyle(color: Colors.black)),
+                      label: const Text("다운로드 센터 열기", style: TextStyle(color: Colors.black)),
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.amber),
                       onPressed: () {
                          Navigator.pop(context); // 서랍 닫고

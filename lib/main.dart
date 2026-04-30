@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:archive/archive.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:http/http.dart' as http;
 
 void main() {
   runApp(const MyApp());
@@ -37,11 +38,10 @@ class BiblePage extends StatefulWidget {
 }
 
 class _BiblePageState extends State<BiblePage> {
-  // 성경 데이터 구조: _data[버전이름][권번호(1~66)][장번호] = [절1, 절2, ...]
+  // 성경 데이터: _data[버전명][권][장] = [절1, 절2...]
   Map<String, dynamic> _data = {};
   List<String> _versions = [];
   
-  // 권 이름 매핑 (하드코딩 - JSON에서 가져오지 않으므로 직접 정의)
   final Map<String, String> _bookNames = {
     "1": "창세기", "2": "출애굽기", "3": "레위기", "4": "민수기", "5": "신명기",
     "6": "여호수아", "7": "사사기", "8": "룻기", "9": "사무엘상", "10": "사무엘하",
@@ -59,7 +59,6 @@ class _BiblePageState extends State<BiblePage> {
     "66": "요한계시록"
   };
 
-  // 외부 .lfa 파일명에 따른 표시 이름 매핑
   final Map<String, String> _lfaNameMap = {
     "korhrv": "개역한글",
     "kornkrv": "개역개정",
@@ -69,14 +68,13 @@ class _BiblePageState extends State<BiblePage> {
     "ENGKJV": "영어 KJV",
   };
 
-  // 상태 변수
   String _curVer = "";
   List<String> _compareVers = [];
   String _curBook = "1";
   String _curChap = "1";
   double _fontSize = 22.0;
   bool _isLoading = true;
-  String _errorMessage = ""; // 에러 또는 안내 메시지 저장
+  String _errorMessage = "";
 
   final ScrollController _scrollController = ScrollController();
 
@@ -86,7 +84,13 @@ class _BiblePageState extends State<BiblePage> {
     _loadExternalLfaFiles();
   }
 
-  // 핵심 로직: Download/bible 폴더에서 .lfa(ZIP) 파일을 찾아 파싱
+  // 기기 내장 스토리지 권한 획득 (Android 11+ 지원)
+  Future<bool> _requestStoragePermission() async {
+    if (await Permission.manageExternalStorage.request().isGranted) return true;
+    if (await Permission.storage.request().isGranted) return true;
+    return false;
+  }
+
   Future<void> _loadExternalLfaFiles() async {
     setState(() {
       _isLoading = true;
@@ -94,10 +98,7 @@ class _BiblePageState extends State<BiblePage> {
     });
 
     try {
-      // 1. 안드로이드 11 이상 스토리지 접근 권한 요청
-      if (await Permission.manageExternalStorage.request().isGranted || 
-          await Permission.storage.request().isGranted) {
-        
+      if (await _requestStoragePermission()) {
         final directory = Directory('/storage/emulated/0/Download/bible');
         
         if (await directory.exists()) {
@@ -112,7 +113,6 @@ class _BiblePageState extends State<BiblePage> {
               String displayName = _lfaNameMap[fileName] ?? fileName;
               
               try {
-                // ZIP(LFA) 파일 압축 해제 및 메모리 로딩
                 final bytes = File(file.path).readAsBytesSync();
                 final archive = ZipDecoder().decodeBytes(bytes);
                 Map<String, dynamic> bookData = {};
@@ -141,32 +141,30 @@ class _BiblePageState extends State<BiblePage> {
                   if (!_versions.contains(displayName)) {
                     _versions.add(displayName);
                   }
-                  debugPrint("로딩 완료: $displayName");
                 }
               } catch (e) {
-                debugPrint("파일 파싱 에러 (${file.path}): $e");
+                debugPrint("파싱 에러 (${file.path}): $e");
               }
             }
           }
 
           if (!fileFound) {
-            _errorMessage = "Download/bible 폴더에\n.lfa 성경 파일이 없습니다.\n파일을 넣고 앱을 다시 실행해주세요.";
+            _errorMessage = "성경 데이터 파일이 없습니다.\n아래 버튼을 눌러 다운로드하세요.";
           }
         } else {
-          // 폴더가 없으면 생성
           await directory.create(recursive: true);
-          _errorMessage = "스마트폰 내부에 성경 폴더를 생성했습니다.\n\n[내 파일 > 다운로드 > bible] 폴더에\n.lfa 성경 파일을 넣고 다시 실행해주세요.";
+          _errorMessage = "성경 데이터 폴더를 생성했습니다.\n아래 버튼을 눌러 데이터를 다운로드하세요.";
         }
       } else {
         _errorMessage = "파일 접근 권한이 필요합니다.\n설정에서 저장소 권한을 허용해주세요.";
       }
     } catch (e) {
-      _errorMessage = "성경 데이터를 불러오는 중 오류가 발생했습니다.\n$e";
+      _errorMessage = "오류가 발생했습니다.\n$e";
     }
 
     setState(() {
       if (_versions.isNotEmpty) {
-        _curVer = _versions.first; // 첫 번째 파싱된 성경을 기본으로 설정
+        _curVer = _versions.first;
       }
       _isLoading = false;
     });
@@ -176,15 +174,58 @@ class _BiblePageState extends State<BiblePage> {
     }
   }
 
+  // 깃허브에서 .lfa 파일 다운로드
+  Future<void> _downloadFromGithub(String fileName) async {
+    if (!await _requestStoragePermission()) {
+      setState(() {
+        _errorMessage = "다운로드를 위해 저장소 권한이 필요합니다.";
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = "데이터를 다운로드 중입니다...\n($fileName)";
+    });
+
+    try {
+      final directory = Directory('/storage/emulated/0/Download/bible');
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+
+      // GitHub Raw URL 지정 (본인의 저장소 구조에 맞춰 수정)
+      final url = 'https://raw.githubusercontent.com/juni0710/bible/main/assets/bibles/$fileName.lfa';
+      final savePath = '${directory.path}/$fileName.lfa';
+
+      final response = await http.get(Uri.parse(url));
+
+      if (response.statusCode == 200) {
+        final file = File(savePath);
+        await file.writeAsBytes(response.bodyBytes);
+        debugPrint("$fileName 다운로드 완료: $savePath");
+        
+        await _loadExternalLfaFiles(); 
+      } else {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = "다운로드 실패: 파일이 없거나 연결 오류 (코드: ${response.statusCode})";
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = "다운로드 중 오류가 발생했습니다.\n$e";
+      });
+    }
+  }
+
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       String savedVer = prefs.getString('ver') ?? "";
-      if (_versions.contains(savedVer)) {
-        _curVer = savedVer;
-      }
+      if (_versions.contains(savedVer)) _curVer = savedVer;
       
-      // 저장된 대조 성경 목록 중 현재 로드된 버전들만 필터링해서 가져옴
       List<String> savedCompareVers = prefs.getStringList('compareVers') ?? [];
       _compareVers = savedCompareVers.where((ver) => _versions.contains(ver)).toList();
       
@@ -195,6 +236,7 @@ class _BiblePageState extends State<BiblePage> {
   }
 
   Future<void> _saveSettings() async {
+    if (_curVer.isEmpty) return; // 데이터 없을 땐 저장 방지
     final prefs = await SharedPreferences.getInstance();
     prefs.setString('ver', _curVer);
     prefs.setStringList('compareVers', _compareVers); 
@@ -221,7 +263,6 @@ class _BiblePageState extends State<BiblePage> {
         cChap--;
       } else if (cBook > 1) {
         cBook--;
-        // 이전 권으로 갈 때는 그 권의 1장으로 이동
         cChap = 1; 
       }
     }
@@ -238,23 +279,23 @@ class _BiblePageState extends State<BiblePage> {
 
   @override
   Widget build(BuildContext context) {
-    // 1. 로딩 중 화면
     if (_isLoading) {
-      return const Scaffold(
+      return Scaffold(
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              CircularProgressIndicator(color: Colors.amber),
-              SizedBox(height: 20),
-              Text("성경 파일을 찾고 있습니다...", style: TextStyle(color: Colors.grey)),
+              const CircularProgressIndicator(color: Colors.amber),
+              const SizedBox(height: 20),
+              Text(_errorMessage.isNotEmpty ? _errorMessage : "성경 데이터를 불러오는 중...", 
+                   style: const TextStyle(color: Colors.grey), textAlign: TextAlign.center),
             ],
           )
         )
       );
     }
 
-    // 2. 에러 또는 파일 없음 화면
+    // 파일이 없거나 에러 발생 시의 화면 (다운로드 유도)
     if (_errorMessage.isNotEmpty || _data.isEmpty) {
       return Scaffold(
         appBar: AppBar(backgroundColor: const Color(0xFF1E1E1E), title: const Text("안내")),
@@ -264,18 +305,28 @@ class _BiblePageState extends State<BiblePage> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.folder_open, size: 80, color: Colors.amber),
+                const Icon(Icons.cloud_download_outlined, size: 80, color: Colors.amber),
                 const SizedBox(height: 20),
                 Text(
-                  _errorMessage.isNotEmpty ? _errorMessage : "알 수 없는 오류가 발생했습니다.",
+                  _errorMessage.isNotEmpty ? _errorMessage : "성경 데이터를 찾을 수 없습니다.",
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 18, height: 1.5),
                 ),
                 const SizedBox(height: 40),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black),
-                  onPressed: _loadExternalLfaFiles,
-                  child: const Text("다시 시도", style: TextStyle(fontWeight: FontWeight.bold)),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.download),
+                  label: const Text("개역한글 다운로드", style: TextStyle(fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.amber, 
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12)
+                  ),
+                  onPressed: () => _downloadFromGithub('korhrv'),
+                ),
+                const SizedBox(height: 10),
+                TextButton(
+                  onPressed: _loadExternalLfaFiles, 
+                  child: const Text("다시 시도", style: TextStyle(color: Colors.grey))
                 )
               ],
             ),
@@ -284,7 +335,7 @@ class _BiblePageState extends State<BiblePage> {
       );
     }
 
-    // 3. 정상 구동 화면
+    // 정상 화면
     final mainTextList = _data[_curVer]?[_curBook]?[_curChap] as List<dynamic>? ?? [];
 
     return Scaffold(
@@ -341,7 +392,6 @@ class _BiblePageState extends State<BiblePage> {
                               ),
                             ],
                           ),
-                          
                           if (_compareVers.isNotEmpty)
                             ..._compareVers.where((ver) => _data.containsKey(ver)).map((compVer) {
                               final compTextList = _data[compVer]?[_curBook]?[_curChap] as List<dynamic>? ?? [];
@@ -458,7 +508,7 @@ class _BiblePageState extends State<BiblePage> {
                     )),
                     const Divider(color: Colors.grey, height: 40),
                     
-                    const Text("함께 볼 성경 (대조 다중선택)", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
+                    const Text("함께 볼 성경 (대조)", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 10),
                     ..._versions.where((v) => v != _curVer).map((v) => CheckboxListTile(
                       title: Text(v, style: TextStyle(color: _compareVers.contains(v) ? Colors.amber : Colors.white)),
@@ -477,6 +527,19 @@ class _BiblePageState extends State<BiblePage> {
                         _saveSettings();
                       },
                     )),
+                    const Divider(color: Colors.grey, height: 40),
+                    
+                    const Text("성경 추가 다운로드", style: TextStyle(color: Colors.amber, fontSize: 20, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 10),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.add),
+                      label: const Text("새번역 다운로드", style: TextStyle(color: Colors.black)),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.amber),
+                      onPressed: () {
+                         Navigator.pop(context);
+                         _downloadFromGithub('kornrsv'); // 예시 파일명
+                      },
+                    )
                   ],
                 );
               }

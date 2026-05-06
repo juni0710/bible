@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:archive/archive.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -23,6 +22,7 @@ class MyApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFF121212),
         primaryColor: Colors.amber,
         useMaterial3: true,
+        fontFamily: 'sans-serif', 
       ),
       home: const BiblePage(),
       debugShowCheckedModeBanner: false,
@@ -58,7 +58,6 @@ class _BiblePageState extends State<BiblePage> {
     "66": "요한계시록"
   };
 
-  // 요청하신 전체 성경 리스트 매핑
   final Map<String, String> _availableDownloads = {
     "korhrv": "개역한글 (기본)",
     "kornkrv": "개역개정",
@@ -131,8 +130,19 @@ class _BiblePageState extends State<BiblePage> {
           for (var file in files) {
             if (file.path.toLowerCase().endsWith('.lfa')) {
               fileFound = true;
-              String fileName = file.path.split('/').last.split('.').first;
-              String displayName = _availableDownloads[fileName] ?? fileName;
+              
+              // 대소문자 & 다운로드 번호 '(1)' 등 무시하고 깔끔한 이름 추출
+              String rawFileName = file.path.split('/').last.split('.').first;
+              String cleanName = rawFileName.split(' ').first.toLowerCase();
+              
+              String displayName = rawFileName;
+              // 매핑 딕셔너리에서 대소문자 무시하고 찰떡같이 찾기
+              for (var entry in _availableDownloads.entries) {
+                if (entry.key.toLowerCase() == cleanName) {
+                  displayName = entry.value;
+                  break;
+                }
+              }
               
               try {
                 final bytes = File(file.path).readAsBytesSync();
@@ -163,14 +173,21 @@ class _BiblePageState extends State<BiblePage> {
                   if (!_versions.contains(displayName)) {
                     _versions.add(displayName);
                   }
+                } else {
+                   // ZIP 안은 열리는데 성경 데이터가 없는 경우도 불량으로 간주
+                   throw Exception("성경 데이터가 비어있음");
                 }
               } catch (e) {
-                debugPrint("파싱 에러 (${file.path}): $e");
+                debugPrint("파싱 에러 및 자동 삭제 (${file.path}): $e");
+                // 불량 파일 자동 청소 (다시 다운받을 수 있게 지워줌)
+                try {
+                  File(file.path).deleteSync();
+                } catch (_) {}
               }
             }
           }
 
-          if (!fileFound) {
+          if (!fileFound && _versions.isEmpty) {
             _errorMessage = "다운로드된 성경이 없습니다.\n아래 버튼을 눌러주세요.";
           }
         } else {
@@ -196,7 +213,6 @@ class _BiblePageState extends State<BiblePage> {
     }
   }
 
-  // 여러 파일을 한 번에 다운로드하는 함수
   Future<void> _downloadMultipleFromGithub(List<String> fileNames) async {
     if (fileNames.isEmpty) return;
 
@@ -230,15 +246,21 @@ class _BiblePageState extends State<BiblePage> {
         final response = await http.get(Uri.parse(url));
 
         if (response.statusCode == 200) {
-          final file = File(savePath);
-          await file.writeAsBytes(response.bodyBytes);
-          successCount++;
+          try {
+            // 안전장치: 다운로드 후 껍데기가 아닌 정상적인 ZIP 파일인지 먼저 검증
+            ZipDecoder().decodeBytes(response.bodyBytes);
+            
+            final file = File(savePath);
+            await file.writeAsBytes(response.bodyBytes);
+            successCount++;
+          } catch (e) {
+             failedFiles.add("$displayName(손상됨)");
+          }
         } else {
           failedFiles.add(displayName);
         }
       }
 
-      // 파싱 시 에러 메시지 덮어쓰기 방지를 위해 다운로드 성공 여부 기록
       await _loadExternalLfaFiles(); 
 
       if (failedFiles.isNotEmpty) {
@@ -370,7 +392,7 @@ class _BiblePageState extends State<BiblePage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text("${_bookNames[_curBook] ?? '성경'} $_curChap장", 
-              style: GoogleFonts.nanumMyeongjo(fontWeight: FontWeight.bold, fontSize: 20)),
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
             Text(
               "$_curVer ${_compareVers.isNotEmpty ? '+ ${_compareVers.join(", ")}' : ''}", 
               style: const TextStyle(fontSize: 12, color: Colors.grey),
@@ -408,7 +430,7 @@ class _BiblePageState extends State<BiblePage> {
                               ),
                               Expanded(
                                 child: Text(mainTextList[index].toString(),
-                                  style: GoogleFonts.nanumMyeongjo(
+                                  style: TextStyle(
                                     color: const Color(0xFFE0E0E0), 
                                     fontSize: _fontSize, 
                                     height: 1.5,
@@ -425,10 +447,10 @@ class _BiblePageState extends State<BiblePage> {
                                   padding: const EdgeInsets.only(top: 8, left: 30),
                                   child: Text(
                                     "└ [$compVer] ${compTextList[index]}",
-                                    style: GoogleFonts.nanumMyeongjo(
+                                    style: TextStyle(
                                       color: Colors.grey, 
-                                      fontSize: _fontSize * 0.75, 
-                                      height: 1.4
+                                      fontSize: _fontSize, 
+                                      height: 1.5 
                                     ),
                                   ),
                                 );
@@ -448,11 +470,11 @@ class _BiblePageState extends State<BiblePage> {
               children: [
                 Expanded(child: ElevatedButton(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black),
-                  onPressed: () => _navigate(-1), child: const Text("이전"))),
+                  onPressed: () => _navigate(-1), child: const Text("이전", style: TextStyle(fontWeight: FontWeight.bold)))),
                 const SizedBox(width: 20),
                 Expanded(child: ElevatedButton(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black),
-                  onPressed: () => _navigate(1), child: const Text("다음"))),
+                  onPressed: () => _navigate(1), child: const Text("다음", style: TextStyle(fontWeight: FontWeight.bold)))),
               ],
             ),
           )
@@ -466,7 +488,6 @@ class _BiblePageState extends State<BiblePage> {
     );
   }
 
-  // --- 개선된 다중 다운로드 모달 ---
   void _showDownloadModal(BuildContext context) {
     Set<String> selectedFiles = {};
 
@@ -476,7 +497,7 @@ class _BiblePageState extends State<BiblePage> {
       isScrollControlled: true,
       builder: (ctx) {
         return FractionallySizedBox(
-          heightFactor: 0.85, // 화면의 85% 높이 차지
+          heightFactor: 0.85, 
           child: StatefulBuilder(
             builder: (BuildContext context, StateSetter setModalState) {
               return Column(
@@ -651,11 +672,11 @@ class _BiblePageState extends State<BiblePage> {
                     const SizedBox(height: 10),
                     ElevatedButton.icon(
                       icon: const Icon(Icons.cloud_download),
-                      label: const Text("다운로드 센터 열기", style: TextStyle(color: Colors.black)),
+                      label: const Text("다운로드 센터 열기", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.amber),
                       onPressed: () {
-                         Navigator.pop(context); // 서랍 닫고
-                         _showDownloadModal(context); // 다운로드 모달 띄우기
+                         Navigator.pop(context); 
+                         _showDownloadModal(context); 
                       },
                     )
                   ],
@@ -682,7 +703,7 @@ class _BiblePageState extends State<BiblePage> {
                   itemCount: 66,
                   itemBuilder: (c, i) => ListTile(
                     title: Text(_bookNames[(i+1).toString()] ?? "", 
-                      style: TextStyle(color: (i+1).toString() == _curBook ? Colors.amber : Colors.grey)),
+                      style: TextStyle(color: (i+1).toString() == _curBook ? Colors.amber : Colors.grey, fontWeight: (i+1).toString() == _curBook ? FontWeight.bold : FontWeight.normal)),
                     onTap: () {
                       setState(() { _curBook = (i+1).toString(); _curChap = "1"; });
                       Navigator.pop(context);
